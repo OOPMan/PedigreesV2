@@ -35,7 +35,6 @@ def init(settings_file):
 
 def load_settings(settings_file):
     ''' Loads the given Settings Python script, returning a dict containing values '''
-    settings_file = os.path.abspath(settings_file)
     sys.path.append(os.path.dirname(settings_file))
     settings = {}
     logging.info('Loading settings from %s' % settings_file)
@@ -44,7 +43,6 @@ def load_settings(settings_file):
 
 def load_csv(settings, input_file):
     ''' Opens and input CSV and parses the contents a row dict '''
-    input_file = os.path.abspath(input_file)
     logging.info('Loading CSV data from %s' % input_file)
     column_coercion_map = settings.get('column_coercion_map', {})
     reader = csv.reader(input_file)
@@ -146,11 +144,22 @@ def set_base_population_members(settings_file, alternate=False):
             alternate_base_members_query.update(base_population_member=True, notes="Added as Base Population Member due to Parents Not Existing in Database")
         session.commit()
 
-def generate_popreport_input(settings_file):
+def generate_popreport_input(settings_file, output_file, groups=None):
     ''' Connects to the database and dumps the data into a file formatted for PopReport '''
-    #TODO
+    logging.info('Generating PopReport Input File')
+    settings, engine, session_class = init(settings_file)
+    with closing(session_class()) as session, open(output_file, 'w') as output:
+        lines = []
+        query = session.query(Animal)
+        # Allow for Group Tuning
+        if isinstance(groups, list):
+            query = query.filter(Animal.group.in_(groups))
+        for animal in query:
+            lines.append('|'.join([str(c) for c in [animal.id, animal.sire_id, animal.dam_id, animal.birth_date.strftime('%Y-%m-%d'), animal.sex]]))
+        output.write('\n'.join(lines))
+        logging.info('Wrote %d Animals to %s' % (len(lines), output_file))
 
-def generate_endog_input(settings_file):
+def generate_endog_input(settings_file, output_file, groups=None):
     ''' Connects to the database and dumps the data into a file formatted for EndDog '''
     #TODO
 
