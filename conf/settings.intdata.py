@@ -1,6 +1,5 @@
-from datetime import date
-from time import strptime
 from settings import connection_string, gender_map
+from functions import coerce_date_value, coerce_animal_id
 
 __author__ = 'adamj'
 
@@ -8,16 +7,10 @@ id_column_name = 'NOMMER'
 
 column_names_list = [id_column_name, 'VAAR', 'MOER', 'GR','YR', 'SEX', 'BDAT', 'WDAT']
 
-def coerce_date_value(value):
-    try:
-        return date(*strptime(value, '%Y/%m/%d')[:3])
-    except ValueError:
-        return date(*strptime(value, '%m/%d/%Y')[:3])
-
 column_value_coercion_map = {
-    id_column_name: int,
-    'VAAR': int,
-    'MOER': int,
+    id_column_name: coerce_animal_id,
+    'VAAR': coerce_animal_id,
+    'MOER': coerce_animal_id,
     'GR': int,
     'SEX': int,
     'BDAT': coerce_date_value,
