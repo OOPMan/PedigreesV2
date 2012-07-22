@@ -9,15 +9,27 @@ id_column_name = 'NOMMER'
 column_names_list = [id_column_name, 'VAAR', 'MOER', 'GR','YR', 'SEX', 'BDAT', 'WDAT']
 
 def coerce_date_value(value):
-    return date(*strptime(value, '%Y/%m/%d')[:3])
+    try:
+        return date(*strptime(value, '%Y/%m/%d')[:3])
+    except ValueError:
+        return date(*strptime(value, '%m/%d/%Y')[:3])
 
-column_coercion_map = {
+column_value_coercion_map = {
     id_column_name: int,
     'VAAR': int,
     'MOER': int,
     'GR': int,
-    'YR': lambda v: int(v)+1900,
     'SEX': int,
     'BDAT': coerce_date_value,
-    'WDAT': coerce_date_value
+}
+
+column_name_coercion_map = {
+    id_column_name: 'id',
+    'VAAR': 'sire_id',
+    'MOER': 'dam_id',
+    'GR': 'group',
+    'YR': None,
+    'SEX': 'sex',
+    'BDAT': 'birth_date',
+    'WDAT': None,
 }

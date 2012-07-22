@@ -6,7 +6,9 @@ id_column_name = ''
 
 column_names_list = []
 
-column_coercion_map = {}
+column_value_coercion_map = {}
+
+column_name_coercion_map = {}
 
 gender_map = {
     'MALE': 1,
