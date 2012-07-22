@@ -9,7 +9,7 @@ id_column_name = 'NOMMER'
 column_names_list = [id_column_name, 'VAAR', 'MOER', 'GR','YR', 'SEX', 'BDAT', 'WDAT']
 
 def coerce_date_value(value):
-    return date(*strptime(value, '%Y/%M/%d')[:3])
+    return date(*strptime(value, '%Y/%m/%d')[:3])
 
 column_coercion_map = {
     id_column_name: int,
