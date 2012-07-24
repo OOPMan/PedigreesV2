@@ -17,5 +17,14 @@ def coerce_date_value(value):
                 return None
 
 def coerce_animal_id(value):
-    value = int(value)
-    return None if value == 0 else value
+    try:
+        value = int(value)
+        return None if value == 0 else value
+    except:
+        return None
+
+def coerce_int(value):
+    try:
+        return int(value)
+    except:
+        return None
