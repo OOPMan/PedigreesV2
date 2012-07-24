@@ -7,7 +7,7 @@ import datetime
 from contextlib import closing
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, aliased
-from sqlalchemy import Column, Integer, Date, Boolean, String, create_engine
+from sqlalchemy import Column, Integer, Date, Boolean, String, create_engine, distinct, not_
 
 __author__ = 'adamj'
 
@@ -19,7 +19,7 @@ class Animal(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     sire_id = Column(Integer, nullable=True, default=None)
     dam_id = Column(Integer, nullable=True, default=None)
-    birth_date = Column(Date, nullable=False)
+    birth_date = Column(Date, nullable=True, default=None)
     group = Column(Integer, nullable=True, default=-1)
     sex = Column(Integer, nullable=True, default=-1)
     base_population_member = Column(Boolean, nullable=False, default=False)
@@ -33,6 +33,11 @@ def init(settings_file):
     session_class = sessionmaker(bind=engine)
     return (settings, engine, session_class)
 
+def init_database(settings_file):
+    logging.info('Performing Database Init')
+    settings, engine, session_class = init(settings_file)
+    Animal.metadata.create_all(engine)
+
 def load_settings(settings_file):
     ''' Loads the given Settings Python script, returning a dict containing values '''
     sys.path.append(os.path.dirname(settings_file))
@@ -44,8 +49,10 @@ def load_settings(settings_file):
 def load_csv(settings, input_file):
     ''' Opens and input CSV and parses the contents a row dict '''
     logging.info('Loading CSV data from %s' % input_file)
-    column_coercion_map = settings.get('column_coercion_map', {})
-    reader = csv.reader(input_file)
+    column_names_list = settings.get('column_names_list', [])
+    column_value_coercion_map = settings.get('column_value_coercion_map', {})
+    column_name_coercion_map = settings.get('column_name_coercion_map', {})
+    reader = csv.reader(open(input_file, 'r'))
     header = reader.next()
     rows = {}
     auto_id = -1
@@ -54,9 +61,9 @@ def load_csv(settings, input_file):
         row_id_value = auto_id
         row_dict = {}
         for column, value in zipped_row:
-            if column in settings.get('column_names_list', []):
-                value = column_coercion_map.get(column, lambda v: v)(value)
-                row_dict[column] = value
+            if column in column_names_list and column_name_coercion_map.get(column) is not None:
+                value = column_value_coercion_map.get(column, lambda v: v)(value)
+                row_dict[column_name_coercion_map[column]] = value
                 if column == settings.get('id_column_name'):
                     row_id_value = value
         rows[row_id_value] = row_dict
@@ -73,35 +80,71 @@ def import_csv(settings_file, input_file, update=True):
     added = 0
     updated = 0
     with closing(session_class()) as session:
-        existing_animal_ids = session.query(Animal.id).all()
+        existing_animal_ids = [a.id for a in session.query(Animal.id).all()]
         for row_id in row_ids.difference(existing_animal_ids):
             session.add(Animal(**rows[row_id]))
             added +=1
         if update:
             for row_id in row_ids.intersection(existing_animal_ids):
-                session.query(Animal).filter(Animal.id == row_id).update(**rows[row_id])
+                session.query(Animal).filter(Animal.id == row_id).update(rows[row_id])
                 updated +=1
         session.commit()
         logging.info('Added %d Animals. Updated %d Animals' % (added, updated))
 
-def fix_genders(settings_file):
+def fix_misgenders(settings_file):
     ''' Connects to the database and corrects the gender values for all animals '''
-    logging.info('Performing Gender Fix')
+    logging.info('Performing Misgender Fix')
     settings, engine, session_class = init(settings_file)
     gender_map = settings.get('gender_map', {})
     with closing(session_class()) as session:
         parent = aliased(Animal)
         child = aliased(Animal)
-        male_females = session.query(parent)\
-                              .outerjoin(child, (child.dam_id == parent.id) & (parent.sex != gender_map['FEMALE']) & (child.id != None) )\
-                              .group_by(parent.id)
-        female_males = session.query(parent)\
-                              .outerjoin(child, (child.sire_id == parent.id) & (parent.sex != gender_map['MALE']) & (child.id != None))\
-                              .group_by(parent.id)
-        logging.info('Detected misassigned %d Males and misassigned %d Females' % (male_females.count(), female_males.count()))
-        male_females.update(sex = gender_map['FEMALE'])
-        female_males.update(sex = gender_map['MALE'])
+        male_females = [a[0] for a in session.query(child.dam_id)\
+                                             .outerjoin(parent, parent.id == child.dam_id)\
+                                             .filter(parent.sex == gender_map['MALE'])\
+                                             .group_by(child.dam_id)\
+                                             .all()]
+        female_males = [a[0] for a in session.query(child.sire_id)\
+                                             .outerjoin(parent, parent.id == child.sire_id)\
+                                             .filter(parent.sex == gender_map['FEMALE'])\
+                                             .group_by(child.sire_id)\
+                                             .all()]
+        logging.info('Detected misassigned %d Males and misassigned %d Females' % (len(male_females), len(female_males)))
+        logging.info('Male Females: %s' % ','.join([str(aid) for aid in male_females]))
+        logging.info('Female Males: %s' % ','.join([str(aid) for aid in female_males]))
+        for animal_id in male_females:
+            session.query(Animal).filter(Animal.id == animal_id).update({'sex': gender_map['FEMALE']})
+        for animal_id in female_males:
+            session.query(Animal).filter(Animal.id == animal_id).update({'sex': gender_map['MALE']})
         session.commit()
+
+def fix_invalid_genders(settings_file):
+    logging.info('Performing Invalid Gender Fix')
+    settings, engine, session_class = init(settings_file)
+    gender_map = settings.get('gender_map', {})
+    with closing(session_class()) as session:
+        gender, gender_value = gender_map.items()[0]
+        invalid_genders = session.query(Animal).filter(not_(Animal.sex.in_(gender_map.values())))
+        logging.info('Detected %d Animals with Invalid Gender Values. Resetting to %s' % (invalid_genders.count(), gender))
+        invalid_genders.update({'sex': gender_value}, synchronize_session='fetch')
+        session.commit()
+
+def fix_birth_dates(settings_file):
+    logging.info('Performing Birth Date Fix')
+    settings, engine, session_class = init(settings_file)
+    with closing(session_class()) as session:
+        birth_dates = session.query(Animal.id).filter(Animal.birth_date == None)
+        logging.info('Detected %d NULL birth dates' % birth_dates.count())
+        counter = 0
+        for animal_id in [animal.id for animal in birth_dates]:
+            year = animal_id / 10000
+            if year >= 79:
+                session.query(Animal).filter(Animal.id == animal_id).update({'birth_date': datetime.date(year + 1900, 1, 1)})
+                counter += 1
+        session.commit()
+        logging.info('Corrected %d NULL birth dates' % counter)
+        if birth_dates.count() > 0:
+            logging.info('Unable to correct birth dates for the following animals: %s' % ','.join([str(a[0]) for a in birth_dates]))
 
 def generate_dummy_animals(settings_file):
     ''' Connects to the database and generates dummy parents for all animals whose parents do not exist '''
@@ -113,35 +156,39 @@ def generate_dummy_animals(settings_file):
         child = aliased(Animal)
         sires = 0
         dams = 0
-        for animal in session.query(child)\
-                             .outerjoin(parent, (child.sire_id != None) & (child.sire_id == parent.id) & (parent.id == None))\
-                             .group_by(child.id):
-            session.add(Animal(id = animal.sire_id, sex=gender_map['MALE'], birth_date=datetime.date(1900+int(str(animal.sire_id)[:2]),1,1), dummy_animal=True))
+        for sire_id in [a[0] for a in session.query(distinct(child.sire_id))\
+                             .outerjoin(parent, child.sire_id == parent.id)\
+                             .filter((child.sire_id != None) & (parent.id == None))]:
+            session.add(Animal(id = sire_id, sex=gender_map['MALE'], birth_date=datetime.date(1900+int(str(sire_id)[:2]),1,1), dummy_animal=True))
             sires += 1
-        for animal in session.query(child)\
-                             .outerjoin(parent, (child.dam_id != None) & (child.dam_id == parent.id) & (parent.id == None))\
-                             .group_by(child.id):
-            session.add(Animal(id = animal.dam_id, sex=gender_map['FEMALE'], birth_date=datetime.date(1900+int(str(animal.sire_id)[:2]),1,1), dummy_animal=True))
+        for dam_id in [a[0] for a in session.query(distinct(child.dam_id))\
+                             .outerjoin(parent, child.dam_id == parent.id)\
+                             .filter((child.dam_id != None) & (parent.id == None))]:
+            session.add(Animal(id = dam_id, sex=gender_map['FEMALE'], birth_date=datetime.date(1900+int(str(dam_id)[:2]),1,1), dummy_animal=True))
             dams +=1
         session.commit()
         logging.info('Added %d Dummy Sires and %s Dummy Dams' % (sires, dams))
 
-def set_base_population_members(settings_file, alternate=False):
+def set_base_population_members(settings_file, method):
     ''' Connects to the database and updates the base_population_member for all animals based on algorithm'''
-    logging.info('Performing Base Population Marking')
+    logging.info('Performing Base Population Marking using %s Method' % method.capitalize())
     settings, engine, session_class = init(settings_file)
     with closing(session_class()) as session:
-        base_members_query = session.query(Animal).filter(Animal.group.in_([0,1]))
-        logging.info('Detected %d Base Population Members (Animals with Group value equal to either 0 or 1)' % base_members_query.count())
-        base_members_query.update(base_population_member=True)
-        if alternate:
-            parent = aliased(Animal)
+        if method == 'standard':
+            base_members_query = session.query(Animal).filter( (Animal.group.in_([0,1]) & (Animal.birth_date < datetime.date(2003,1,1)) ) )
+            logging.info('Detected %d Base Population Members (Animals with Group value equal to either 0 or 1 born before 01/01/2003)' % base_members_query.count())
+            base_members_query.update({'base_population_member': True}, synchronize_session='fetch')
+        elif method == 'noparents':
+            sire = aliased(Animal)
+            dam = aliased(Animal)
             child = aliased(Animal)
-            alternate_base_members_query = session.query(child)\
-                                                  .outerjoin(parent, ((child.sire_id == parent.id) | (child.dam_id == parent.id)) & (parent.id == None))\
-                                                  .group_by(child.id)
-            logging.info('Detected %d possible Base Population Members' % alternate_base_members_query.count())
-            alternate_base_members_query.update(base_population_member=True, notes="Added as Base Population Member due to Parents Not Existing in Database")
+            base_member_ids = [a[0] for a in session.query(distinct(child.id))\
+                                                  .outerjoin(sire, child.sire_id == sire.id)\
+                                                  .outerjoin(dam, child.dam_id == dam.id)\
+                                                  .filter((sire.id == None) & (dam.id == None))]
+            logging.info('Detected %d possible Base Population Members' % len(base_member_ids))
+            for base_member_id in base_member_ids:
+                session.query(Animal).filter(Animal.id == base_member_id).update({'base_population_member': True, 'notes': "Added as Base Population Member due to Parents Not Existing in Database"})
         session.commit()
 
 def generate_popreport_input(settings_file, output_file, groups=None):
@@ -153,9 +200,13 @@ def generate_popreport_input(settings_file, output_file, groups=None):
         query = session.query(Animal)
         # Allow for Group Tuning
         if isinstance(groups, list):
-            query = query.filter(Animal.group.in_(groups))
+            query = query.filter( (Animal.group.in_(groups)) | (Animal.base_population_member == True) )
         for animal in query:
-            lines.append('|'.join([str(c) for c in [animal.id, animal.sire_id, animal.dam_id, animal.birth_date.strftime('%Y-%m-%d'), animal.sex]]))
+            lines.append('|'.join([str(c) for c in [animal.id if animal.id is not None else '',
+                                                    animal.sire_id if animal.sire_id is not None else '',
+                                                    animal.dam_id if animal.dam_id is not None else '',
+                                                    animal.birth_date.strftime('%Y-%m-%d') if animal.birth_date is not None else '',
+                                                    animal.sex if animal.sex is not None else '']]))
         output.write('\n'.join(lines))
         logging.info('Wrote %d Animals to %s' % (len(lines), output_file))
 
