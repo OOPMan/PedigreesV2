@@ -1,3 +1,4 @@
+from settings import connection_string, gender_map
 from functions import coerce_date_value, coerce_animal_id, coerce_int
 
 __author__ = 'adamj'
