@@ -216,7 +216,8 @@ def locate_disconnected_animals(settings_file, input_file=None, delete=False):
         logging.info('Disconnected Animal IDs: %s' % ','.join([str(animal.id) for animal in disconnected_animals]))
         if delete:
             logging.info('Deleting disconnected Animals')
-            disconnected_animals.delete(synchronize_session='fetch')
+            for animal in disconnected_animals:
+                session.delete(animal)
         session.commit()
 
 def generate_popreport_input(settings_file, output_file, groups=None):
