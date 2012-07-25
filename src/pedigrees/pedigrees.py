@@ -169,13 +169,13 @@ def generate_dummy_animals(settings_file):
         session.commit()
         logging.info('Added %d Dummy Sires and %s Dummy Dams' % (sires, dams))
 
-def set_base_population_members(settings_file, method):
+def set_base_population_members(settings_file, method='standard'):
     ''' Connects to the database and updates the base_population_member for all animals based on algorithm'''
     logging.info('Performing Base Population Marking using %s Method' % method.capitalize())
     settings, engine, session_class = init(settings_file)
     with closing(session_class()) as session:
         if method == 'standard':
-            base_members_query = session.query(Animal).filter( (Animal.group.in_([0,1]) & (Animal.birth_date < datetime.date(2003,1,1)) ) )
+            base_members_query = session.query(Animal).filter( (Animal.base_population_member == False) & (Animal.group.in_([0,1]) & (Animal.birth_date < datetime.date(2003,1,1)) ) )
             logging.info('Detected %d Base Population Members (Animals with Group value equal to either 0 or 1 born before 01/01/2003)' % base_members_query.count())
             base_members_query.update({'base_population_member': True}, synchronize_session='fetch')
         elif method == 'noparents':
@@ -185,10 +185,38 @@ def set_base_population_members(settings_file, method):
             base_member_ids = [a[0] for a in session.query(distinct(child.id))\
                                                   .outerjoin(sire, child.sire_id == sire.id)\
                                                   .outerjoin(dam, child.dam_id == dam.id)\
-                                                  .filter((sire.id == None) & (dam.id == None))]
+                                                  .filter((Animal.base_population_member == False) & (sire.id == None) & (dam.id == None))]
             logging.info('Detected %d possible Base Population Members' % len(base_member_ids))
             for base_member_id in base_member_ids:
                 session.query(Animal).filter(Animal.id == base_member_id).update({'base_population_member': True, 'notes': "Added as Base Population Member due to Parents Not Existing in Database"})
+        session.commit()
+
+def locate_disconnected_animals(settings_file, input_file=None, delete=False):
+    ''' Connects to the database and locates all animals that are disconnected from the dataset '''
+    logging.info('Performing Disconnected Animal Detection')
+    if input_file:
+        logging.info('Will filter Animal IDs using data from %s' % input_file)
+    if delete:
+        logging.info('Will delete located Animals')
+    settings, engine, session_class = init(settings_file)
+    with closing(session_class()) as session:
+        sire = aliased(Animal)
+        dam = aliased(Animal)
+        child1 = aliased(Animal)
+        child2 = aliased(Animal)
+        disconnected_animals = session.query(Animal)\
+                                      .outerjoin(sire, Animal.sire_id == sire.id)\
+                                      .outerjoin(dam, Animal.dam_id == dam.id)\
+                                      .outerjoin(child1, Animal.id == child1.sire_id)\
+                                      .outerjoin(child2, Animal.id == child2.dam_id)\
+                                      .filter( (sire.id == None) & (dam.id == None) & (child1.id == None) & (child2.id == None) )
+        if input_file:
+            disconnected_animals = disconnected_animals.filter(Animal.id.in_(load_csv(settings, input_file).keys()))
+        logging.info('Detected %d total disconnected Animals' % disconnected_animals.count())
+        logging.info('Disconnected Animal IDs: %s' % ','.join([str(animal.id) for animal in disconnected_animals]))
+        if delete:
+            logging.info('Deleting disconnected Animals')
+            disconnected_animals.delete(synchronize_session='fetch')
         session.commit()
 
 def generate_popreport_input(settings_file, output_file, groups=None):
