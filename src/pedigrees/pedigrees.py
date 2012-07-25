@@ -2,12 +2,12 @@ import logging
 import os
 import sys
 import csv
-import dbfpy
 import datetime
 from contextlib import closing
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, aliased
 from sqlalchemy import Column, Integer, Date, Boolean, String, create_engine, distinct, not_
+from dbfpy import dbf
 
 __author__ = 'adamj'
 
@@ -241,6 +241,28 @@ def generate_popreport_input(settings_file, output_file, groups=None):
 
 def generate_endog_input(settings_file, output_file, groups=None):
     ''' Connects to the database and dumps the data into a file formatted for EndDog '''
-    #TODO
-
-
+    logging.info('Generating Endog Input File')
+    settings, engine, session_class = init(settings_file)
+    with closing(session_class()) as session, closing(dbf.Dbf(output_file, new=True)) as db:
+        db.addField(
+            ('ID', 'N', 16, 0),
+            ('SIRE_ID', 'N', 16, 0),
+            ('DAM_ID', 'N', 16, 0),
+            ('BIRTH_DATE', 'D'),
+            ('SEX', 'N', 1, 0),
+            ('REFERENCE', 'N', 1, 0)
+            )
+        query = session.query(Animal)
+        # Allow for Group Tuning
+        if isinstance(groups, list):
+            query = query.filter( (Animal.group.in_(groups)) | (Animal.base_population_member == True) )
+        for animal in query:
+            record = db.newRecord()
+            record['ID'] = animal.id if animal.id else 0
+            record['SIRE_ID'] = animal.sire_id if animal.sire_id else 0
+            record['DAM_ID'] = animal.dam_id if animal.dam_id else 0
+            record['BIRTH_DATE'] = animal.birth_date
+            record['SEX'] = animal.sex
+            record['REFERENCE'] = int(animal.base_population_member)
+            record.store()
+        logging.info('Wrote %d Animals to %s' % (query.count(), output_file))
