@@ -137,7 +137,8 @@ def fix_birth_dates(settings_file):
         logging.info('Detected %d NULL birth dates' % birth_dates.count())
         counter = 0
         for animal_id in [animal.id for animal in birth_dates]:
-            year = animal_id / 10000
+            animal_id_str = str(animal_id)
+            year = int(animal_id_str[:3]) if animal_id_str[0] == '1' else int(animal_id_str[:2])
             if year >= 79:
                 session.query(Animal).filter(Animal.id == animal_id).update({'birth_date': datetime.date(year + 1900, 1, 1)})
                 counter += 1
@@ -177,7 +178,7 @@ def set_base_population_members(settings_file, method='standard'):
         if method == 'standard':
             base_members_query = session.query(Animal).filter( (Animal.base_population_member == False) & (Animal.group.in_([0,1]) & (Animal.birth_date < datetime.date(2003,1,1)) ) )
             logging.info('Detected %d Base Population Members (Animals with Group value equal to either 0 or 1 born before 01/01/2003)' % base_members_query.count())
-            base_members_query.update({'base_population_member': True}, synchronize_session='fetch')
+            base_members_query.update({'sire_id': None, 'dam_id': None, 'base_population_member': True}, synchronize_session='fetch')
         elif method == 'noparents':
             sire = aliased(Animal)
             dam = aliased(Animal)
@@ -188,7 +189,9 @@ def set_base_population_members(settings_file, method='standard'):
                                                   .filter((Animal.base_population_member == False) & (sire.id == None) & (dam.id == None))]
             logging.info('Detected %d possible Base Population Members' % len(base_member_ids))
             for base_member_id in base_member_ids:
-                session.query(Animal).filter(Animal.id == base_member_id).update({'base_population_member': True, 'notes': "Added as Base Population Member due to Parents Not Existing in Database"})
+                session.query(Animal)\
+                       .filter(Animal.id == base_member_id)\
+                       .update({'sire_id': None, 'dam_id': None, 'base_population_member': True, 'notes': "Added as Base Population Member due to Parents Not Existing in Database"})
         session.commit()
 
 def locate_disconnected_animals(settings_file, input_file=None, delete=False):
@@ -220,17 +223,30 @@ def locate_disconnected_animals(settings_file, input_file=None, delete=False):
                 session.delete(animal)
         session.commit()
 
-def generate_popreport_input(settings_file, output_file, groups=None):
-    ''' Connects to the database and dumps the data into a file formatted for PopReport '''
-    logging.info('Generating PopReport Input File')
-    settings, engine, session_class = init(settings_file)
-    with closing(session_class()) as session, open(output_file, 'w') as output:
-        lines = []
+def get_rows_for_generate(session_class, groups = None):
+    with closing(session_class()) as session:
         query = session.query(Animal)
         # Allow for Group Tuning
         if isinstance(groups, list):
             query = query.filter( (Animal.group.in_(groups)) | (Animal.base_population_member == True) )
-        for animal in query:
+        row_sets = [ [animal for animal in query] ]
+        while True:
+            animals = row_sets[0]
+            animal_ids = [animal.id for animal in animals]
+            parent_ids = set([animal.sire_id for animal in animals] + [animal.dam_id for animal in animals])
+            missing_parent_ids = parent_ids.difference(animal_ids)
+            if not missing_parent_ids:
+                break
+            row_sets.insert(0, [animal for animal in session.query(Animal).filter(Animal.id.in_(missing_parent_ids))])
+        return { animal.id: animal for row_set in row_sets for animal in row_set }.values()
+
+def generate_popreport_input(settings_file, output_file, groups=None):
+    ''' Connects to the database and dumps the data into a file formatted for PopReport '''
+    logging.info('Generating PopReport Input File')
+    settings, engine, session_class = init(settings_file)
+    with open(output_file, 'w') as output:
+        lines = []
+        for animal in get_rows_for_generate(session_class, groups):
             lines.append('|'.join([str(c) for c in [animal.id if animal.id is not None else '',
                                                     animal.sire_id if animal.sire_id is not None else '',
                                                     animal.dam_id if animal.dam_id is not None else '',
@@ -243,26 +259,25 @@ def generate_endog_input(settings_file, output_file, groups=None):
     ''' Connects to the database and dumps the data into a file formatted for EndDog '''
     logging.info('Generating Endog Input File')
     settings, engine, session_class = init(settings_file)
-    with closing(session_class()) as session, closing(dbf.Dbf(output_file, new=True)) as db:
+    with closing(dbf.Dbf(output_file, new=True)) as db:
         db.addField(
             ('ID', 'N', 16, 0),
             ('SIRE_ID', 'N', 16, 0),
             ('DAM_ID', 'N', 16, 0),
             ('BIRTH_DATE', 'D'),
-            ('SEX', 'N', 1, 0),
+            ('S', 'N', 1, 0),
+            ('GROUP','N', 16, 0),
             ('REFERENCE', 'N', 1, 0)
             )
-        query = session.query(Animal)
-        # Allow for Group Tuning
-        if isinstance(groups, list):
-            query = query.filter( (Animal.group.in_(groups)) | (Animal.base_population_member == True) )
-        for animal in query:
+        animals = get_rows_for_generate(session_class, groups)
+        for animal in animals:
             record = db.newRecord()
             record['ID'] = animal.id if animal.id else 0
             record['SIRE_ID'] = animal.sire_id if animal.sire_id else 0
             record['DAM_ID'] = animal.dam_id if animal.dam_id else 0
             record['BIRTH_DATE'] = animal.birth_date
-            record['SEX'] = animal.sex
+            record['S'] = animal.sex
+            record['GROUP'] = animal.group
             record['REFERENCE'] = int(animal.base_population_member)
             record.store()
-        logging.info('Wrote %d Animals to %s' % (query.count(), output_file))
+        logging.info('Wrote %d Animals to %s' % (len(animals), output_file))
