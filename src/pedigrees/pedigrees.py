@@ -129,6 +129,10 @@ def fix_invalid_genders(settings_file):
         invalid_genders.update({'sex': gender_value}, synchronize_session='fetch')
         session.commit()
 
+def generate_birth_date(animal_id):
+    animal_id_str = str(animal_id)
+    return 1900 + (int(animal_id_str[:3]) if animal_id_str[0] == '1' else int(animal_id_str[:2]))
+
 def fix_birth_dates(settings_file):
     logging.info('Performing Birth Date Fix')
     settings, engine, session_class = init(settings_file)
@@ -137,10 +141,9 @@ def fix_birth_dates(settings_file):
         logging.info('Detected %d NULL birth dates' % birth_dates.count())
         counter = 0
         for animal_id in [animal.id for animal in birth_dates]:
-            animal_id_str = str(animal_id)
-            year = int(animal_id_str[:3]) if animal_id_str[0] == '1' else int(animal_id_str[:2])
-            if year >= 79:
-                session.query(Animal).filter(Animal.id == animal_id).update({'birth_date': datetime.date(year + 1900, 1, 1)})
+            year = generate_birth_date(animal_id)
+            if year >= 1979:
+                session.query(Animal).filter(Animal.id == animal_id).update({'birth_date': datetime.date(year, 1, 1)})
                 counter += 1
         session.commit()
         logging.info('Corrected %d NULL birth dates' % counter)
@@ -160,12 +163,12 @@ def generate_dummy_animals(settings_file):
         for sire_id in [a[0] for a in session.query(distinct(child.sire_id))\
                              .outerjoin(parent, child.sire_id == parent.id)\
                              .filter((child.sire_id != None) & (parent.id == None))]:
-            session.add(Animal(id = sire_id, sex=gender_map['MALE'], birth_date=datetime.date(1900+int(str(sire_id)[:2]),1,1), dummy_animal=True))
+            session.add(Animal(id = sire_id, sex=gender_map['MALE'], birth_date=datetime.date(generate_birth_date(sire_id), 1, 1), dummy_animal=True))
             sires += 1
         for dam_id in [a[0] for a in session.query(distinct(child.dam_id))\
                              .outerjoin(parent, child.dam_id == parent.id)\
                              .filter((child.dam_id != None) & (parent.id == None))]:
-            session.add(Animal(id = dam_id, sex=gender_map['FEMALE'], birth_date=datetime.date(1900+int(str(dam_id)[:2]),1,1), dummy_animal=True))
+            session.add(Animal(id = dam_id, sex=gender_map['FEMALE'], birth_date=datetime.date(generate_birth_date(dam_id),1,1), dummy_animal=True))
             dams +=1
         session.commit()
         logging.info('Added %d Dummy Sires and %s Dummy Dams' % (sires, dams))
